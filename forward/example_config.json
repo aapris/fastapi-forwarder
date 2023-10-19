@@ -1,0 +1,18 @@
+{
+  "X-API-KEY": "abcdef1234567890abcdef1234567890abcdef12",
+  "LOGGING_LEVEL": "DEBUG",
+  "DESTINATIONS": [
+    {
+      "url": "https://httpbin.org/anything",
+      "extra_params": {
+        "x": "1"
+      }
+    },
+    {
+      "url": "https://httpbin.org/anything",
+      "extra_params": {
+        "x": "2"
+      }
+    }
+  ]
+}

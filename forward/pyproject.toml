@@ -1,0 +1,42 @@
+[tool.setuptools]
+py-modules = []
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[project]
+name = "fastapi-forward"
+description = ""
+readme = "README.md"
+requires-python = ">=3.11"
+dynamic = ["version"]
+
+dependencies = [
+  "fastapi",
+  "httpx",
+  "uvicorn",
+]
+
+[project.optional-dependencies]
+dev = [
+  "autoflake",
+  "autopep8",
+  "black",
+  "flake8",
+  "isort",
+  "pep8-naming",
+  "pre-commit",
+  "pydantic",
+  "pytest",
+  "pytest-asyncio",
+  "pytest-cov",
+]
+test = [
+    "pytest",
+    "requests"
+] #pip-compile --resolver=backtracking --extra test pyproject.toml

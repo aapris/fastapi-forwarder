@@ -1,0 +1,24 @@
+# fastapi-forward
+# This is only for development purposes
+
+version: '3.8'
+
+services:
+
+  forward:
+    build: ./forward
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    volumes:
+      - ./forward:/home/app
+    environment:
+      CONFIG_FILE: "example_config.json"
+      X_API_KEY: "abcdef1234567890abcdef1234567890abcdef12"
+      UVICORN_LOG_LEVEL: "debug"
+      UVICORN_RELOAD: "true"
+      DEBUG: 1
+
+
+volumes:
+  requests:
