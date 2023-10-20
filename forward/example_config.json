@@ -1,6 +1,7 @@
 {
   "X-API-KEY": "abcdef1234567890abcdef1234567890abcdef12",
-  "LOGGING_LEVEL": "DEBUG",
+  "LOG_LEVEL": "INFO",
+  "SQLALCHEMY_DATABASE_URL": "sqlite+aiosqlite:///./data/requests.sqlite",
   "DESTINATIONS": [
     {
       "url": "https://httpbin.org/anything",

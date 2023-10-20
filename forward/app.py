@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import json
 import logging
 import os
@@ -9,14 +10,16 @@ from fastapi import FastAPI, Request
 from starlette import status
 from starlette.exceptions import HTTPException
 
+from async_database import get_db_engine, StarletteRequest
+
 # Load configuration from a JSON file
 with open(os.getenv("CONFIG_FILE"), "r") as config_file:
     config = json.load(config_file)
 
-# Set logging level
-logging.basicConfig(level=config["LOGGING_LEVEL"])
+# Set logging level and format with timestamp
+logging.basicConfig(format="%(asctime)s %(levelname)-8s %(message)s", level=getattr(logging, config["LOG_LEVEL"]))
 logging.info("==============================================================================")
-logging.info("Starting forwarder with logging level {}".format(config["LOGGING_LEVEL"]))
+logging.info("Starting forwarder with logging level {}".format(config["LOG_LEVEL"]))
 
 # List of destinations to forward the requests to, extracted from the config
 destinations = [destination["url"] for destination in config["DESTINATIONS"]]
@@ -24,6 +27,7 @@ logging.info(f"Destinations: {destinations}")
 
 app = FastAPI()
 client = httpx.AsyncClient()
+db_engine = None
 
 
 def check_api_key(request: Request):
@@ -40,6 +44,42 @@ def check_api_key(request: Request):
             detail="Missing or invalid authentication token (x-api-key)",
         )
     return True
+
+
+@app.on_event("startup")
+async def startup_event():
+    """
+    Initialize the database engine.
+    """
+    global db_engine
+    db_url = config.get("SQLALCHEMY_DATABASE_URL", "")
+    logging.info(f"Starting up, getting db engine: {db_url}")
+    if db_url != "":
+        db_engine = await get_db_engine(config["SQLALCHEMY_DATABASE_URL"])
+
+
+async def write_request_to_db(request):
+    """
+    Write the request to the database, if configured.
+    """
+    if db_engine is None:  # noqa
+        return
+    async with db_engine.begin() as conn:  # noqa
+        await conn.execute(
+            StarletteRequest.insert(),
+            [
+                {
+                    "time": datetime.datetime.now(datetime.timezone.utc),
+                    "method": request.method,
+                    "url": str(request.url),
+                    "headers": dict(request.headers),
+                    "params": dict(request.query_params),
+                    "body": await request.body(),
+                    "remote_ip": request.client.host,
+                }
+            ],
+        )
+    await db_engine.dispose()  # noqa
 
 
 @app.get("/")
@@ -59,7 +99,9 @@ async def forward_to_destination(method: str, url: str, body: bytes, headers: di
 async def forward_request(request: Request):
     """
     Forward the request to all destinations. Modify the request as needed.
+    Store the request to the database, if configured.
     """
+    asyncio.create_task(write_request_to_db(request))
     check_api_key(request)  # raises HTTPException if not ok
     body = await request.body()  # Will be sent as-is
     headers = dict(request.headers)  # Will be modified as needed

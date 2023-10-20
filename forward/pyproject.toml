@@ -17,8 +17,10 @@ requires-python = ">=3.11"
 dynamic = ["version"]
 
 dependencies = [
+  "aiosqlite",
   "fastapi",
   "httpx",
+  "sqlalchemy[asyncio]",
   "uvicorn",
 ]
 
