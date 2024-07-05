@@ -1,19 +1,34 @@
 {
-  "X-API-KEY": "abcdef1234567890abcdef1234567890abcdef12",
-  "LOG_LEVEL": "INFO",
-  "SQLALCHEMY_DATABASE_URL": "sqlite+aiosqlite:///./data/requests.sqlite",
-  "DESTINATIONS": [
-    {
-      "url": "https://httpbin.org/anything",
-      "extra_params": {
-        "x": "1"
-      }
+  "paths": {
+    "/api/v1": {
+      "original_app_url": {
+        "url": "http://host.docker.internal:8001/",
+        "extra_headers": {},
+        "extra_params": {}
+      },
+      "forward_urls": [
+        {
+          "url": "http://host.docker.internal:8002/",
+          "extra_headers": {},
+          "extra_params": {}
+        }
+      ]
     },
-    {
-      "url": "https://httpbin.org/anything",
-      "extra_params": {
-        "x": "2"
-      }
+    "/api/v2": {
+      "original_app_url": {
+        "url": "http://host.docker.internal:8002/",
+        "extra_headers": {},
+        "extra_params": {}
+      },
+      "forward_urls": [
+        {
+          "url": "http://host.docker.internal:8001/",
+          "extra_headers": {},
+          "extra_params": {}
+        }
+      ]
     }
-  ]
+  },
+  "forward_timeout": 5.0,
+  "log_file": "logs/request_response_log.jsonl"
 }

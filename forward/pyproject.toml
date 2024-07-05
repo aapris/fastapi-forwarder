@@ -17,10 +17,10 @@ requires-python = ">=3.11"
 dynamic = ["version"]
 
 dependencies = [
-  "aiosqlite",
   "fastapi",
   "httpx",
-  "sqlalchemy[asyncio]",
+  "pydantic",
+  "structlog",
   "uvicorn",
 ]
 
@@ -33,7 +33,6 @@ dev = [
   "isort",
   "pep8-naming",
   "pre-commit",
-  "pydantic",
   "pytest",
   "pytest-asyncio",
   "pytest-cov",

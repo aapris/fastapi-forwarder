@@ -1,122 +1,163 @@
 import asyncio
-import datetime
 import json
-import logging
 import os
 import time
+from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import List, Dict
 
 import httpx
-from fastapi import FastAPI, Request
-from starlette import status
-from starlette.exceptions import HTTPException
-
-from async_database import get_db_engine, StarletteRequest
-
-# Load configuration from a JSON file
-with open(os.getenv("CONFIG_FILE"), "r") as config_file:
-    config = json.load(config_file)
-
-# Set logging level and format with timestamp
-logging.basicConfig(format="%(asctime)s %(levelname)-8s %(message)s", level=getattr(logging, config["LOG_LEVEL"]))
-logging.info("==============================================================================")
-logging.info("Starting forwarder with logging level {}".format(config["LOG_LEVEL"]))
-
-# List of destinations to forward the requests to, extracted from the config
-destinations = [destination["url"] for destination in config["DESTINATIONS"]]
-logging.info(f"Destinations: {destinations}")
-
-app = FastAPI()
-client = httpx.AsyncClient()
-db_engine = None
+import structlog
+from fastapi import FastAPI, Request, BackgroundTasks
+from pydantic import BaseModel, HttpUrl
+from starlette.responses import Response
 
 
-def check_api_key(request: Request):
-    """
-    Check that the request has a valid API key in params or headers.
-    """
-    api_key = request.query_params.get("x-api-key")
-    if api_key is None:
-        api_key = request.headers.get("x-api-key")
-    if api_key is None or api_key != config["X-API-KEY"]:
-        logging.warning("Missing or invalid authentication token (x-api-key)")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing or invalid authentication token (x-api-key)",
-        )
-    return True
+# Configuration models
 
 
-@app.on_event("startup")
-async def startup_event():
-    """
-    Initialize the database engine.
-    """
-    global db_engine
-    db_url = config.get("SQLALCHEMY_DATABASE_URL", "")
-    logging.info(f"Starting up, getting db engine: {db_url}")
-    if db_url != "":
-        db_engine = await get_db_engine(config["SQLALCHEMY_DATABASE_URL"])
+class ForwardTarget(BaseModel):
+    url: HttpUrl
+    extra_headers: Dict[str, str] = {}
+    extra_params: Dict[str, str] = {}
 
 
-async def write_request_to_db(request):
-    """
-    Write the request to the database, if configured.
-    """
-    if db_engine is None:  # noqa
-        return
-    async with db_engine.begin() as conn:  # noqa
-        await conn.execute(
-            StarletteRequest.insert(),
-            [
-                {
-                    "time": datetime.datetime.now(datetime.timezone.utc),
-                    "method": request.method,
-                    "url": str(request.url),
-                    "headers": dict(request.headers),
-                    "params": dict(request.query_params),
-                    "body": await request.body(),
-                    "remote_ip": request.client.host,
-                }
-            ],
-        )
-    await db_engine.dispose()  # noqa
+class PathConfig(BaseModel):
+    original_app_url: ForwardTarget
+    forward_urls: List[ForwardTarget]
 
 
-@app.get("/")
-async def root():
-    return {"message": "HTTP OK"}
+class ProxyConfig(BaseModel):
+    paths: Dict[str, PathConfig]
+    log_file: str = "request_response_log.jsonl"
+    forward_timeout: float = 5.0  # Default timeout for forward requests in seconds
 
 
-async def forward_to_destination(method: str, url: str, body: bytes, headers: dict, params: dict):
+# Initialize structured logger
+logger = structlog.get_logger()
+
+# Global config and HTTP client
+config: ProxyConfig = None
+client: httpx.AsyncClient = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    global config, client
+    # Load configuration from JSON file
+    config_filename = os.getenv("CONFIG_FILE", "proxy_config.json")
+    with open(config_filename) as config_file:
+        config_data = json.load(config_file)
+    config = ProxyConfig(**config_data)
+    client = httpx.AsyncClient()
+
+    yield
+
+    # Shutdown
+    await client.aclose()
+
+
+# Create FastAPI app with lifespan
+app = FastAPI(lifespan=lifespan)
+
+
+async def log_request(request: Request):
+    body = await request.body()
+    # Try to decode the body as UTF-8, if it fails replace with a placeholder
+    try:
+        body = body.decode("utf-8")
+    except UnicodeDecodeError:
+        body = "<binary data>"
+    log_entry = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "event_type": "request",
+        "method": request.method,
+        "url": str(request.url),
+        "headers": dict(request.headers),
+        "body": body,
+    }
+    write_log(log_entry)
+
+
+async def log_response(url: str, response: httpx.Response, execution_time: float):
+    log_entry = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "event_type": "response",
+        "service": str(url),
+        "status_code": response.status_code,
+        "headers": dict(response.headers),
+        "body": response.text,
+        "execution_time": execution_time,
+    }
+    write_log(log_entry)
+
+
+def write_log(log_entry: dict):
+    # add %Y%m%d to the log file name to create a new log file every day
+    log_file = config.log_file.replace(".jsonl", f"_{datetime.utcnow().strftime('%Y%m%d')}.jsonl")
+    with open(log_file, "a") as log_file:
+        log_file.write(json.dumps(log_entry) + "\n")
+
+
+async def send_request(dest_url: ForwardTarget, method: str, headers: dict, body: bytes):
     start_time = time.time()
-    response = await client.request(method, url, content=body, headers=headers, params=params)
-    total_time = time.time() - start_time
-    logging.info(f"Response {response.status_code} in {total_time:0.3f}s from: {response.request.url}")
-    logging.debug(f"{response.text}")
+    url = str(dest_url.url)
+    try:
+        response = await client.request(method, url, content=body, headers=headers, timeout=config.forward_timeout)
+        execution_time = time.time() - start_time
+        await log_response(url, response, execution_time)
+    except Exception as e:
+        logger.error(f"Failed to forward request to {url}", exc_info=e)
 
 
-@app.api_route("/forward", methods=["GET", "POST", "PUT"])
-async def forward_request(request: Request):
-    """
-    Forward the request to all destinations. Modify the request as needed.
-    Store the request to the database, if configured.
-    """
-    asyncio.create_task(write_request_to_db(request))
-    check_api_key(request)  # raises HTTPException if not ok
-    body = await request.body()  # Will be sent as-is
-    headers = dict(request.headers)  # Will be modified as needed
-    for h in ["x-api-key", "host"]:  # Remove host header, otherwise httpx will use it as the host
-        if h in headers:
-            del headers[h]
-    params = dict(request.query_params)
-    if "x-api-key" in params:
-        del params["x-api-key"]
-    for url in destinations:
-        asyncio.create_task(forward_to_destination(request.method, url, body, headers, params))
-    return {"message": "Request forwarded to destinations"}
+async def forward_requests(forward_urls: List[ForwardTarget], method: str, headers: dict, body: bytes):
+    tasks = [send_request(url, method, headers, body) for url in forward_urls]
+    await asyncio.gather(*tasks)
+
+
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH", "TRACE"])
+async def proxy(request: Request, background_tasks: BackgroundTasks):
+    # If request contains query parameter `test`, return a test response
+    if "test" in request.query_params and request.query_params["test"] == "1":
+        return Response(content="Test OK", status_code=200)
+    path = request.url.path
+    path_config = next((config.paths[k] for k in config.paths if path.startswith(k)), None)
+
+    if not path_config:
+        return Response(status_code=404)  # Not Found if no matching path configuration
+
+    await log_request(request)
+
+    # Forward to original app
+    body = await request.body()
+    headers = dict(request.headers)
+    method = request.method
+
+    start_time = time.time()
+    try:
+        url = path_config.original_app_url.url
+        original_response = await client.request(
+            method, str(url), content=body, headers=headers, timeout=config.forward_timeout
+        )
+        execution_time = time.time() - start_time
+        await log_response(url, original_response, execution_time)
+    except Exception as e:
+        logger.error(f"Failed to forward request to original app {path_config.original_app_url}", exc_info=e)
+        return Response(status_code=502)  # Bad Gateway if original app doesn't respond
+
+    # Schedule forward requests to run in the background
+    background_tasks.add_task(forward_requests, path_config.forward_urls, method, headers, body)
+
+    # Return the response from the original app immediately
+    return Response(
+        content=original_response.content,
+        status_code=original_response.status_code,
+        headers=dict(original_response.headers),
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8080)
