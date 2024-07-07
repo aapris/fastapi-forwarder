@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 import time
 from contextlib import asynccontextmanager
@@ -30,6 +31,7 @@ class PathConfig(BaseModel):
 class ProxyConfig(BaseModel):
     paths: Dict[str, PathConfig]
     log_file: str = "request_response_log.jsonl"
+    log_level: str = "INFO"
     forward_timeout: float = 5.0  # Default timeout for forward requests in seconds
 
 
@@ -50,6 +52,8 @@ async def lifespan(app: FastAPI):
     with open(config_filename) as config_file:
         config_data = json.load(config_file)
     config = ProxyConfig(**config_data)
+    # Set log level
+    logging.basicConfig(level=config.log_level or "INFO")
     client = httpx.AsyncClient()
 
     yield
@@ -100,19 +104,22 @@ def write_log(log_entry: dict):
         log_file.write(json.dumps(log_entry) + "\n")
 
 
-async def send_request(dest_url: ForwardTarget, method: str, headers: dict, body: bytes):
+async def send_request(dest_url: ForwardTarget, method: str, params: dict, headers: dict, body: bytes):
     start_time = time.time()
     url = str(dest_url.url)
+    headers.update(dest_url.extra_headers)
     try:
-        response = await client.request(method, url, content=body, headers=headers, timeout=config.forward_timeout)
+        response = await client.request(
+            method, url, content=body, params=params, headers=headers, timeout=config.forward_timeout
+        )
         execution_time = time.time() - start_time
         await log_response(url, response, execution_time)
     except Exception as e:
         logger.error(f"Failed to forward request to {url}", exc_info=e)
 
 
-async def forward_requests(forward_urls: List[ForwardTarget], method: str, headers: dict, body: bytes):
-    tasks = [send_request(url, method, headers, body) for url in forward_urls]
+async def forward_requests(forward_urls: List[ForwardTarget], method: str, params: dict, headers: dict, body: bytes):
+    tasks = [send_request(url, method, params, headers, body) for url in forward_urls]
     await asyncio.gather(*tasks)
 
 
@@ -133,12 +140,20 @@ async def proxy(request: Request, background_tasks: BackgroundTasks):
     body = await request.body()
     headers = dict(request.headers)
     method = request.method
+    query_params = dict(request.query_params)
+    # Update query parameters with extra params from the configuration
+    query_params.update(path_config.original_app_url.extra_params)
 
     start_time = time.time()
     try:
         url = path_config.original_app_url.url
+        # Remove obsolete headers, host and content-length
+        for key in ["host", "content-length"]:
+            headers.pop(key, None)
+        headers.update(path_config.original_app_url.extra_headers)
+
         original_response = await client.request(
-            method, str(url), content=body, headers=headers, timeout=config.forward_timeout
+            method, str(url), content=body, params=query_params, headers=headers, timeout=config.forward_timeout
         )
         execution_time = time.time() - start_time
         await log_response(url, original_response, execution_time)
@@ -147,7 +162,7 @@ async def proxy(request: Request, background_tasks: BackgroundTasks):
         return Response(status_code=502)  # Bad Gateway if original app doesn't respond
 
     # Schedule forward requests to run in the background
-    background_tasks.add_task(forward_requests, path_config.forward_urls, method, headers, body)
+    background_tasks.add_task(forward_requests, path_config.forward_urls, method, query_params, headers, body)
 
     # Return the response from the original app immediately
     return Response(

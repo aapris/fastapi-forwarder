@@ -3,32 +3,33 @@
     "/api/v1": {
       "original_app_url": {
         "url": "http://host.docker.internal:8001/",
-        "extra_headers": {},
-        "extra_params": {}
+        "extra_headers": {"host": "host.docker.internal"},
+        "extra_params": {"x-api-key": "abcd1234"}
       },
       "forward_urls": [
         {
           "url": "http://host.docker.internal:8002/",
-          "extra_headers": {},
-          "extra_params": {}
+          "extra_headers": {"host": "host.docker.internal"},
+          "extra_params": {"x-api-key": "abcd1234"}
         }
       ]
     },
     "/api/v2": {
       "original_app_url": {
         "url": "http://host.docker.internal:8002/",
-        "extra_headers": {},
-        "extra_params": {}
+        "extra_headers": {"host": "host.docker.internal"},
+        "extra_params": {"x-api-key": "abcd1234"}
       },
       "forward_urls": [
         {
           "url": "http://host.docker.internal:8001/",
-          "extra_headers": {},
-          "extra_params": {}
+          "extra_headers": {"host": "host.docker.internal"},
+          "extra_params": {"x-api-key": "abcd1234"}
         }
       ]
     }
   },
   "forward_timeout": 5.0,
-  "log_file": "logs/request_response_log.jsonl"
+  "log_file": "logs/request_response_log.jsonl",
+  "log_level": "DEBUG"
 }
